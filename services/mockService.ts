@@ -61,7 +61,11 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
     - category: string (Use the value "${category}")
 
     Return ONLY the raw JSON string. Do not use markdown code blocks.
-    Verify that the website links provided are valid. If you are unsure of the official site, use a google search URL for the event name.
+    Return ONLY the raw JSON string. Do not use markdown code blocks.
+    Verify that the website links provided are valid. 
+    CRITICAL: The website MUST be the proper official homepage of the event. 
+    Do NOT return "google.com/search" links or similar search result pages. 
+    If you cannot find the direct official website, exclude the event from the list.
   `;
 
   try {
@@ -104,8 +108,9 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
       // 1. Check Required Fields
       if (!e.name || !e.date || !e.place || !e.website) return;
 
-      // 2. Syntax Check
+      // 2. Syntax & Quality Check
       if (!isValidUrl(e.website)) return;
+      if (e.website.includes('google.com/search') || e.website.includes('google.com/url')) return;
 
       // 3. Reachability Check (Best effort)
       const isReachable = await checkUrlReachability(e.website);
