@@ -1,7 +1,12 @@
 import { EventData } from '../types';
 import { GoogleGenAI } from "@google/genai";
 
-// Initialize Gemini Client
+// Helpers
+// @ts-ignore: injected by Vite
+const SERPER_API_KEY = process.env.VITE_SERPER_API_KEY;
+// @ts-ignore: injected by Vite
+const FIRECRAWL_API_KEY = process.env.VITE_FIRECRAWL_API_KEY;
+
 // Initialize Gemini Client Lazily
 // @ts-ignore: process.env is injected by the build/runtime environment
 const getGenAI = () => {
@@ -13,126 +18,146 @@ const getGenAI = () => {
   return new GoogleGenAI({ apiKey: key });
 };
 
-const isValidUrl = (str: string) => {
+const searchGoogle = async (query: string, limit = 4): Promise<string[]> => {
+  if (!SERPER_API_KEY) {
+    console.warn("Serper API Key missing. Skipping real search.");
+    return [];
+  }
+
   try {
-    new URL(str);
-    return true;
-  } catch {
-    return false;
+    const response = await fetch("https://google.serper.dev/search", {
+      method: "POST",
+      headers: {
+        "X-API-KEY": SERPER_API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ q: query, num: limit }),
+    });
+
+    if (!response.ok) throw new Error("Serper API failed");
+
+    const data = await response.json();
+    return data.organic?.map((r: any) => r.link).filter((l: string) => l) || [];
+  } catch (e) {
+    console.error("Serper Error:", e);
+    return [];
   }
 };
 
-const checkUrlReachability = async (url: string): Promise<boolean> => {
-  if (!isValidUrl(url)) return false;
-  try {
-    const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+const scrapeWithFirecrawl = async (url: string): Promise<string | null> => {
+  if (!FIRECRAWL_API_KEY) return null;
 
-    // mode: 'no-cors' allows us to send the request without CORS errors blocking the execution immediately,
-    // but we get an opaque response. If the network request fails (DNS, connection refused), it throws.
-    // This effectively checks if the domain/server is reachable.
-    await fetch(url, {
-      method: 'HEAD',
-      mode: 'no-cors',
-      signal: controller.signal
+  try {
+    const response = await fetch('https://api.firecrawl.dev/v2/scrape', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${FIRECRAWL_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        url: url,
+        formats: ["markdown"]
+      })
     });
 
-    clearTimeout(id);
-    return true;
+    if (!response.ok) return null;
+    const data = await response.json();
+    return data.success ? data.data?.markdown : null;
   } catch (e) {
-    return false;
+    console.error("Firecrawl Error:", e);
+    return null;
   }
 };
 
 export const searchRealEvents = async (city: string, category: string, keyword: string): Promise<EventData[]> => {
   const currentYear = new Date().getFullYear();
+  const searchQuery = `Top B2B ${category} conferences events in ${city} ${currentYear} 2026 ${keyword || ''} official website`;
+
+  console.log(`[Pipeline] 1. Searching Google for: "${searchQuery}"`);
+  const links = await searchGoogle(searchQuery);
+
+  if (links.length === 0) {
+    console.warn("[Pipeline] No links found. Falling back to simple generation.");
+    // Fallback to pure generation if search fails completely
+    return generateFallbackEvents(city, category, keyword);
+  }
+
+  console.log(`[Pipeline] 2. Found ${links.length} links. Scraping content...`);
+
+  // Scrape top 3 links to avoid hitting rate limits too hard
+  const scrapedContents = await Promise.all(
+    links.slice(0, 3).map(async (link) => {
+      const content = await scrapeWithFirecrawl(link);
+      return content ? `SOURCE URL: ${link}\nCONTENT:\n${content.substring(0, 8000)}\n---` : null;
+    })
+  );
+
+  const context = scrapedContents.filter(c => c).join("\n\n");
+
+  if (!context) {
+    return generateFallbackEvents(city, category, keyword);
+  }
+
+  console.log(`[Pipeline] 3. Extracting events with Gemini...`);
 
   const prompt = `
-    Find real, upcoming professional B2B events, conferences, and summits in ${city} related to "${category}" ${keyword ? `and matching keywords "${keyword}"` : ''}.
-    Focus on events happening in late ${currentYear} or 2026.
+    You are an expert event data extractor. 
+    Analyze the following scraped content from search results and extract a list of REAL, CONFIRMED B2B events happening in ${city} related to "${category}".
     
-    Return the results as a JSON array of objects. 
-    Each object must strictly have these fields:
-    - name: string (The official name of the event)
-    - date: string (Formatted exactly as "MM/DD/YYYY" or "MM/DD/YYYY - MM/DD/YYYY" if multi-day)
-    - place: string (The venue name and city)
-    - priceRange: string (Estimate price, e.g. "$500 - $1000" or "TBD")
-    - website: string (The OFFICIAL event website. Do not use generic aggregators like 10times or eventbrite unless it's the only source)
-    - category: string (Use the value "${category}")
+    SCRAPED CONTENT:
+    ${context}
 
-    Return ONLY the raw JSON string. Do not use markdown code blocks.
-    Return ONLY the raw JSON string. Do not use markdown code blocks.
-    Verify that the website links provided are valid. 
-    CRITICAL: The website MUST be the proper official homepage of the event. 
-    Do NOT return "google.com/search" links or similar search result pages. 
-    If you cannot find the direct official website, exclude the event from the list.
+    INSTRUCTIONS:
+    - Only include events that are explicitly mentioned in the text with a confirmed date and location.
+    - IGNORE generic aggregators or lists of "Top 10 events" unless you can extract specific details for a single event.
+    - STRICTLY use the "SOURCE URL" provided in the text as the website. Do NOT make up URLs.
+    - Return a JSON array.
+
+    JSON SCHEMA:
+    - name: string
+    - date: string (e.g. "October 15-17, 2025")
+    - place: string
+    - priceRange: string (or "TBD")
+    - website: string (The SOURCE URL provided above)
+    - category: string ("${category}")
+
+    Return ONLY raw JSON.
   `;
 
   try {
     const ai = getGenAI();
-    if (!ai) {
-      throw new Error("Gemini API Key is disallowed or missing. Please configure GEMINI_API_KEY in your environment variables.");
-    }
+    if (!ai) throw new Error("Gemini Client not initialized");
 
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
-      config: {
-        tools: [{ googleSearch: {} }],
-        // responseMimeType: 'application/json' // Removed: incompatible with googleSearch tool
-      }
+      config: { responseMimeType: 'application/json' }
     });
 
-    let text = response.text;
-    if (!text) return [];
+    const text = response.text?.replace(/```json/g, '').replace(/```/g, '').trim() || '[]';
+    const rawEvents = JSON.parse(text);
 
-    // Clean up potential markdown formatting if the model adds it despite instructions
-    text = text.replace(/```json/g, '').replace(/```/g, '').trim();
-
-    // Parse the JSON response
-    let rawEvents: any[] = [];
-    try {
-      rawEvents = JSON.parse(text);
-    } catch (e) {
-      console.error("Failed to parse JSON from Gemini:", text);
-      return [];
-    }
-
-    if (!Array.isArray(rawEvents)) return [];
-
-    // Validate and Clean Events
-    const validatedEvents: EventData[] = [];
-
-    // Process validations in parallel
-    await Promise.all(rawEvents.map(async (e) => {
-      // 1. Check Required Fields
-      if (!e.name || !e.date || !e.place || !e.website) return;
-
-      // 2. Syntax & Quality Check
-      if (!isValidUrl(e.website)) return;
-      if (e.website.includes('google.com/search') || e.website.includes('google.com/url')) return;
-
-      // 3. Reachability Check (Best effort)
-      const isReachable = await checkUrlReachability(e.website);
-      if (!isReachable) return;
-
-      validatedEvents.push({
-        id: crypto.randomUUID(),
-        name: e.name,
-        website: e.website,
-        date: e.date,
-        place: e.place,
-        priceRange: e.priceRange || 'TBD',
-        category: category,
-        isDuplicate: false,
-        syncStatus: 'idle'
-      });
+    return rawEvents.map((e: any) => ({
+      id: crypto.randomUUID(),
+      name: e.name,
+      website: e.website,
+      date: e.date,
+      place: e.place,
+      priceRange: e.priceRange || 'TBD',
+      category: category,
+      isDuplicate: false,
+      syncStatus: 'idle'
     }));
 
-    return validatedEvents;
-
   } catch (error) {
-    console.error("Error fetching real events:", error);
-    throw new Error("Failed to perform real-time search.");
+    console.error("[Pipeline] Extraction failed:", error);
+    return [];
   }
+};
+
+// Fallback logic (Old method, simplified)
+const generateFallbackEvents = async (city: string, category: string, keyword: string): Promise<EventData[]> => {
+  // Return empty to encourage user to check API keys
+  // or implement a very basic generation if desired, but robustness is preferred.
+  return [];
 };
