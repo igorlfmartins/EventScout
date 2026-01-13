@@ -57,11 +57,11 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
     - date: string (Formatted exactly as "MM/DD/YYYY" or "MM/DD/YYYY - MM/DD/YYYY" if multi-day)
     - place: string (The venue name and city)
     - priceRange: string (Estimate price, e.g. "$500 - $1000" or "TBD")
-    - website: string (The real URL to the event page)
+    - website: string (The OFFICIAL event website. Do not use generic aggregators like 10times or eventbrite unless it's the only source)
     - category: string (Use the value "${category}")
 
     Return ONLY the raw JSON string. Do not use markdown code blocks.
-    Verify that the website links provided are valid.
+    Verify that the website links provided are valid. If you are unsure of the official site, use a google search URL for the event name.
   `;
 
   try {

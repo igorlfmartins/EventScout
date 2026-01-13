@@ -12,22 +12,23 @@ export const Header: React.FC<HeaderProps> = ({ toggleTheme, isDark }) => {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
         <div className="flex flex-col">
           {/* Logo Image */}
-          <img 
-            src="/logo.svg" 
-            alt="EventScout" 
-            className="h-10 w-auto mb-1 object-contain self-start"
+          <img
+            src="/logo-full.png"
+            alt="EventScout"
+            className="h-14 w-auto mb-1 object-contain self-start"
             onError={(e) => {
               // Fallback to text if image fails to load
+              console.error("Failed to load logo", e);
               e.currentTarget.style.display = 'none';
               const fallback = document.getElementById('logo-fallback');
               if (fallback) fallback.classList.remove('hidden');
             }}
           />
-          
+
           {/* Fallback Text (Hidden by default) */}
-          <h1 
+          <h1
             id="logo-fallback"
-            className="hidden text-4xl font-extrabold italic text-white leading-none mb-1" 
+            className="hidden text-4xl font-extrabold italic text-white leading-none mb-1"
             style={{ fontFamily: '"Guyot Headline", serif' }}
           >
             EventScout
@@ -37,7 +38,7 @@ export const Header: React.FC<HeaderProps> = ({ toggleTheme, isDark }) => {
             Your B2B Event Intelligence Platform
           </p>
         </div>
-        
+
         <div className="flex items-center gap-4">
           <button
             onClick={toggleTheme}
