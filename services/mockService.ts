@@ -2,8 +2,16 @@ import { EventData } from '../types';
 import { GoogleGenAI } from "@google/genai";
 
 // Initialize Gemini Client
+// Initialize Gemini Client Lazily
 // @ts-ignore: process.env is injected by the build/runtime environment
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+const getGenAI = () => {
+  const key = process.env.API_KEY || process.env.GEMINI_API_KEY;
+  if (!key) {
+    console.warn("Gemini API Key is missing!");
+    return null;
+  }
+  return new GoogleGenAI({ apiKey: key });
+};
 
 const isValidUrl = (str: string) => {
   try {
@@ -15,30 +23,30 @@ const isValidUrl = (str: string) => {
 };
 
 const checkUrlReachability = async (url: string): Promise<boolean> => {
-    if (!isValidUrl(url)) return false;
-    try {
-        const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 3000); // 3 second timeout
-        
-        // mode: 'no-cors' allows us to send the request without CORS errors blocking the execution immediately,
-        // but we get an opaque response. If the network request fails (DNS, connection refused), it throws.
-        // This effectively checks if the domain/server is reachable.
-        await fetch(url, { 
-            method: 'HEAD',
-            mode: 'no-cors', 
-            signal: controller.signal 
-        });
-        
-        clearTimeout(id);
-        return true;
-    } catch (e) {
-        return false;
-    }
+  if (!isValidUrl(url)) return false;
+  try {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), 3000); // 3 second timeout
+
+    // mode: 'no-cors' allows us to send the request without CORS errors blocking the execution immediately,
+    // but we get an opaque response. If the network request fails (DNS, connection refused), it throws.
+    // This effectively checks if the domain/server is reachable.
+    await fetch(url, {
+      method: 'HEAD',
+      mode: 'no-cors',
+      signal: controller.signal
+    });
+
+    clearTimeout(id);
+    return true;
+  } catch (e) {
+    return false;
+  }
 };
 
 export const searchRealEvents = async (city: string, category: string, keyword: string): Promise<EventData[]> => {
   const currentYear = new Date().getFullYear();
-  
+
   const prompt = `
     Find real, upcoming professional B2B events, conferences, and summits in ${city} related to "${category}" ${keyword ? `and matching keywords "${keyword}"` : ''}.
     Focus on events happening in late ${currentYear} or 2026.
@@ -57,6 +65,11 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
   `;
 
   try {
+    const ai = getGenAI();
+    if (!ai) {
+      throw new Error("Gemini API Key is disallowed or missing. Please configure GEMINI_API_KEY in your environment variables.");
+    }
+
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: prompt,
@@ -75,40 +88,40 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
     // Parse the JSON response
     let rawEvents: any[] = [];
     try {
-        rawEvents = JSON.parse(text);
+      rawEvents = JSON.parse(text);
     } catch (e) {
-        console.error("Failed to parse JSON from Gemini:", text);
-        return [];
+      console.error("Failed to parse JSON from Gemini:", text);
+      return [];
     }
-    
+
     if (!Array.isArray(rawEvents)) return [];
 
     // Validate and Clean Events
     const validatedEvents: EventData[] = [];
-    
+
     // Process validations in parallel
     await Promise.all(rawEvents.map(async (e) => {
-        // 1. Check Required Fields
-        if (!e.name || !e.date || !e.place || !e.website) return;
-        
-        // 2. Syntax Check
-        if (!isValidUrl(e.website)) return;
+      // 1. Check Required Fields
+      if (!e.name || !e.date || !e.place || !e.website) return;
 
-        // 3. Reachability Check (Best effort)
-        const isReachable = await checkUrlReachability(e.website);
-        if (!isReachable) return;
+      // 2. Syntax Check
+      if (!isValidUrl(e.website)) return;
 
-        validatedEvents.push({
-            id: crypto.randomUUID(),
-            name: e.name,
-            website: e.website,
-            date: e.date,
-            place: e.place,
-            priceRange: e.priceRange || 'TBD',
-            category: category,
-            isDuplicate: false,
-            syncStatus: 'idle'
-        });
+      // 3. Reachability Check (Best effort)
+      const isReachable = await checkUrlReachability(e.website);
+      if (!isReachable) return;
+
+      validatedEvents.push({
+        id: crypto.randomUUID(),
+        name: e.name,
+        website: e.website,
+        date: e.date,
+        place: e.place,
+        priceRange: e.priceRange || 'TBD',
+        category: category,
+        isDuplicate: false,
+        syncStatus: 'idle'
+      });
     }));
 
     return validatedEvents;
