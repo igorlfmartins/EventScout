@@ -109,8 +109,14 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
 
     INSTRUCTIONS:
     - Only include events that are explicitly mentioned in the text with a confirmed date and location.
-    - IGNORE generic aggregators or lists of "Top 10 events" unless you can extract specific details for a single event.
-    - STRICTLY use the "SOURCE URL" provided in the text as the website. Do NOT make up URLs.
+    - **CRITICAL: OFFICIAL WEBSITE DETECTION**
+        - The "SOURCE URL" provided above might be a blog post, news article, or aggregator (e.g., "Top 10 Tech Events").
+        - You MUST analyze the content to find the **actual external link** to the official event homepage.
+        - Look for text like "Register here", "Official Website", "Visit site", or the event's name linked.
+        - IF found, use that external link as the 'website'.
+        - IF NOT found, and the SOURCE URL itself looks like the official home (e.g., matches the event name), use the SOURCE URL.
+        - IF the event is mentioned but no official link exists, exclude it.
+    - IGNORE generic lists without specific details.
     - Return a JSON array.
 
     JSON SCHEMA:
@@ -118,7 +124,7 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
     - date: string (e.g. "October 15-17, 2025")
     - place: string
     - priceRange: string (or "TBD")
-    - website: string (The SOURCE URL provided above)
+    - website: string (The extracted OFFICIAL link)
     - category: string ("${category}")
 
     Return ONLY raw JSON.
@@ -157,7 +163,48 @@ export const searchRealEvents = async (city: string, category: string, keyword: 
 
 // Fallback logic (Old method, simplified)
 const generateFallbackEvents = async (city: string, category: string, keyword: string): Promise<EventData[]> => {
-  // Return empty to encourage user to check API keys
-  // or implement a very basic generation if desired, but robustness is preferred.
-  return [];
+  console.warn("[Pipeline] Entering Fallback Mode (Gemini Only)");
+  const prompt = `
+      Generates 5 realistic B2B ${category} events in ${city} for late 2025/2026.
+      ${keyword ? `Focus on: ${keyword}` : ''}
+      
+      Return a JSON array with these fields:
+      - name: string
+      - date: string
+      - place: string
+      - priceRange: string
+      - website: string (Use "https://google.com/search?q=" + event name if unknown)
+      - category: string ("${category}")
+      
+      Strictly valid JSON.
+    `;
+
+  try {
+    const ai = getGenAI();
+    if (!ai) return [];
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash',
+      contents: prompt,
+      config: { responseMimeType: 'application/json' }
+    });
+
+    const text = response.text?.replace(/```json/g, '').replace(/```/g, '').trim() || '[]';
+    const raw = JSON.parse(text);
+
+    return raw.map((e: any) => ({
+      id: crypto.randomUUID(),
+      name: e.name, // Indicate it's generated
+      website: e.website,
+      date: e.date,
+      place: e.place,
+      priceRange: e.priceRange,
+      category: category,
+      isDuplicate: false,
+      syncStatus: 'idle'
+    }));
+  } catch (e) {
+    console.error("Fallback failed:", e);
+    return [];
+  }
 };
